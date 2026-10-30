@@ -1,0 +1,209 @@
+name: CI-CD OpenShift
+
+# ==========================================
+# TRIGGERS: SE ACTIVA SOLO AL CONSOLIDAR CÓDIGO
+# ==========================================
+on:
+  push:
+    branches:
+      - master
+      - develop
+
+permissions:
+  contents: read
+
+jobs:
+
+  # ==========================================
+  # JOB 1: PREVALIDACIÓN
+  # ==========================================
+  prevalidation:
+    name: Prevalidar
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validación inicial
+        run: |
+          echo "Simulación de verificación de la estructura del repositorio realizada correctamente."
+
+  # ==========================================
+  # JOB 2: COMPILACIÓN
+  # ==========================================
+  build:
+    name: Compilar
+    runs-on: ubuntu-24.04
+    needs: prevalidation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Instalar Java 25 usando la acción oficial de GitHub
+      - name: Configurar Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      # 2. Compilar
+      - name: Compilar con Gradle
+        run: |
+          chmod +x gradlew
+          ./gradlew compileJava -x test
+
+  # ==========================================
+  # JOB 3: PRUEBAS Y COBERTURA
+  # ==========================================
+  test:
+    name: Pruebas y Cobertura
+    runs-on: ubuntu-24.04
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Instalar Java 25 usando la acción oficial de GitHub
+      - name: Configurar Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      # 2. Ejecutar pruebas y cobertura
+      - name: Ejecutar Pruebas y Cobertura
+        run: |
+          chmod +x gradlew
+          ./gradlew check
+
+      # Equivalente aproximado a PublishCodeCoverageResults
+      - name: Publicar Artefactos JaCoCo
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: |
+            **/build/reports/jacoco/**
+            **/build/test-results/**
+          retention-days: 15
+
+  # ==========================================
+  # JOB 4: APROBACIÓN MANUAL
+  # ==========================================
+  #
+  # En GitHub Actions la aprobación manual se logra
+  # asociando el job a un Environment con reviewers.
+  #
+  # Settings -> Environments -> openshift-sandbox
+  #
+  # Configurar allí los usuarios aprobadores.
+  #
+  # Cuando el flujo llegue a este job quedará
+  # esperando aprobación automáticamente.
+  #
+  # ==========================================
+  approval:
+    name: Esperando aprobación
+    runs-on: ubuntu-24.04
+    needs: test
+
+    environment:
+      name: openshift-sandbox
+
+    steps:
+      - name: Esperando aprobación manual
+        run: |
+          echo "Aprobación realizada correctamente."
+
+  # ==========================================
+  # JOB 5: DESPLIEGUE CONTINUO (CD)
+  # ==========================================
+  deploy:
+    name: Desplegar en OpenShift
+    runs-on: ubuntu-24.04
+    needs: approval
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Descarga CLI, Login y Despliegue Docker
+        env:
+          OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
+          OPENSHIFT_SERVER: ${{ secrets.OPENSHIFT_SERVER }}
+        run: |
+
+          echo "=== 1. Descargando e instalando OpenShift CLI (oc) ==="
+
+          curl -LO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+
+          tar -xzf openshift-client-linux.tar.gz
+
+          sudo mv oc /usr/local/bin/
+
+          oc version --client
+
+          echo "=== 2. Autenticando en el Clúster ==="
+
+          oc login \
+            --token="$OPENSHIFT_TOKEN" \
+            --server="$OPENSHIFT_SERVER" \
+            --insecure-skip-tls-verify=true
+
+          echo "=== 3. Seleccionando Proyecto ==="
+
+          oc project estebanfer07-dev
+
+          echo "=== 4. Aplicando Manifiestos (Creando BuildConfig y Deployment) ==="
+
+          oc apply -f helm/build-config.yaml
+          oc apply -f helm/dev.yml
+          oc apply -f helm/service.yaml
+          oc apply -f helm/route.yaml
+
+          echo "=== 5. Iniciando Build en OpenShift (Dockerfile) ==="
+
+          oc start-build jee-msa-web-demo-pipeline --follow
+
+          echo "=== 6. Reiniciando el despliegue para tomar la nueva imagen ==="
+
+          oc rollout restart deployment/jee-msa-web-demo-pipeline
+
+          echo "=== 7. Esperando a que el Pod esté listo ==="
+
+          oc rollout status deployment/jee-msa-web-demo-pipeline
+
+          echo "=== 8. Obteniendo URL de la Aplicación ==="
+
+          oc get route \
+            jee-msa-web-demo-pipeline \
+            -o jsonpath='URL: http://{.spec.host}{"\n"}'
+
+  # ==========================================
+  # JOB 6: NOTIFICACIONES
+  # ==========================================
+  notifications:
+    name: Enviar Reporte
+    runs-on: ubuntu-24.04
+
+    needs:
+      - prevalidation
+      - build
+      - test
+      - approval
+      - deploy
+
+    if: always()
+
+    steps:
+      - name: Simulación de Envío de Correo Electrónico
+        run: |
+          echo "=========================================="
+          echo "Estado Final del Workflow"
+          echo "=========================================="
+          echo "Prevalidación : ${{ needs.prevalidation.result }}"
+          echo "Build         : ${{ needs.build.result }}"
+          echo "Tests         : ${{ needs.test.result }}"
+          echo "Aprobación    : ${{ needs.approval.result }}"
+          echo "Deploy        : ${{ needs.deploy.result }}"
+          echo "=========================================="
