@@ -109,7 +109,7 @@ jobs:
     needs: test
 
     environment:
-      name: openshift-sandbox
+      name: test-approval
 
     steps:
       - name: Esperando aprobación manual
@@ -123,6 +123,9 @@ jobs:
     name: Desplegar en OpenShift
     runs-on: ubuntu-24.04
     needs: approval
+
+    environment:
+      name: test-env
 
     steps:
       - uses: actions/checkout@v4
